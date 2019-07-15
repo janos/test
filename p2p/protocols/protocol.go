@@ -29,11 +29,10 @@ devp2p subprotocols by abstracting away code standardly shared by protocols.
 package protocols
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"reflect"
 	"sync"
 	"time"
@@ -42,9 +41,6 @@ import (
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/ethersphere/swarm/spancontext"
-	"github.com/ethersphere/swarm/tracing"
-	opentracing "github.com/opentracing/opentracing-go"
 )
 
 // error codes used by this  protocol scheme
@@ -256,52 +252,52 @@ func (p *Peer) Send(ctx context.Context, msg interface{}) error {
 	metrics.GetOrRegisterCounter("peer.send", nil).Inc(1)
 	metrics.GetOrRegisterCounter(fmt.Sprintf("peer.send.%T", msg), nil).Inc(1)
 
-	var b bytes.Buffer
-	if tracing.Enabled {
-		writer := bufio.NewWriter(&b)
+	//var b bytes.Buffer
+	//if tracing.Enabled {
+	//writer := bufio.NewWriter(&b)
 
-		tracer := opentracing.GlobalTracer()
+	//tracer := opentracing.GlobalTracer()
 
-		sctx := spancontext.FromContext(ctx)
+	//sctx := spancontext.FromContext(ctx)
 
-		if sctx != nil {
-			err := tracer.Inject(
-				sctx,
-				opentracing.Binary,
-				writer)
-			if err != nil {
-				return err
-			}
-		}
+	//if sctx != nil {
+	//err := tracer.Inject(
+	//sctx,
+	//opentracing.Binary,
+	//writer)
+	//if err != nil {
+	//return err
+	//}
+	//}
 
-		writer.Flush()
-	}
+	//writer.Flush()
+	//}
 
 	r, err := rlp.EncodeToBytes(msg)
 	if err != nil {
 		return err
 	}
 
-	wmsg := WrappedMsg{
-		Context: b.Bytes(),
-		Size:    uint32(len(r)),
-		Payload: r,
-	}
+	//wmsg := WrappedMsg{
+	//Context: b.Bytes(),
+	//Size:    uint32(len(r)),
+	//Payload: r,
+	//}
 
 	//if the accounting hook is set, call it
-	if p.spec.Hook != nil {
-		err := p.spec.Hook.Send(p, wmsg.Size, msg)
-		if err != nil {
-			p.Drop()
-			return err
-		}
-	}
+	//if p.spec.Hook != nil {
+	//err := p.spec.Hook.Send(p, wmsg.Size, msg)
+	//if err != nil {
+	//p.Drop()
+	//return err
+	//}
+	//}
 
 	code, found := p.spec.GetCode(msg)
 	if !found {
 		return errorf(ErrInvalidMsgType, "%v", code)
 	}
-	return p2p.Send(p.rw, code, wmsg)
+	return p2p.Send(p.rw, code, r)
 }
 
 // handleIncoming(code)
@@ -325,43 +321,47 @@ func (p *Peer) handleIncoming(handle func(ctx context.Context, msg interface{}) 
 	}
 
 	// unmarshal wrapped msg, which might contain context
-	var wmsg WrappedMsg
-	err = msg.Decode(&wmsg)
-	if err != nil {
-		log.Error(err.Error())
-		return err
-	}
+	//var wmsg WrappedMsg
+	//err = msg.Decode(&wmsg)
+	//if err != nil {
+	//log.Error(err.Error())
+	//return err
+	//}
 
-	ctx := context.Background()
+	//ctx := context.Background()
 
-	// if tracing is enabled and the context coming within the request is
-	// not empty, try to unmarshal it
-	if tracing.Enabled && len(wmsg.Context) > 0 {
-		var sctx opentracing.SpanContext
+	//// if tracing is enabled and the context coming within the request is
+	//// not empty, try to unmarshal it
+	//if tracing.Enabled && len(wmsg.Context) > 0 {
+	//var sctx opentracing.SpanContext
 
-		tracer := opentracing.GlobalTracer()
-		sctx, err = tracer.Extract(
-			opentracing.Binary,
-			bytes.NewReader(wmsg.Context))
-		if err != nil {
-			log.Error(err.Error())
-			return err
-		}
+	//tracer := opentracing.GlobalTracer()
+	//sctx, err = tracer.Extract(
+	//opentracing.Binary,
+	//bytes.NewReader(wmsg.Context))
+	//if err != nil {
+	//log.Error(err.Error())
+	//return err
+	//}
 
-		ctx = spancontext.WithContext(ctx, sctx)
-	}
+	//ctx = spancontext.WithContext(ctx, sctx)
+	//}
 
 	val, ok := p.spec.NewMsg(msg.Code)
 	if !ok {
 		return errorf(ErrInvalidMsgCode, "%v", msg.Code)
 	}
-	if err := rlp.DecodeBytes(wmsg.Payload, val); err != nil {
+	b, err := ioutil.ReadAll(msg.Payload)
+	if err != nil {
+		panic(err)
+	}
+	if err := rlp.DecodeBytes(b, val); err != nil {
 		return errorf(ErrDecode, "<= %v: %v", msg, err)
 	}
 
 	//if the accounting hook is set, call it
 	if p.spec.Hook != nil {
-		err := p.spec.Hook.Receive(p, wmsg.Size, val)
+		err := p.spec.Hook.Receive(p, msg.Size, val)
 		if err != nil {
 			return err
 		}
@@ -372,7 +372,7 @@ func (p *Peer) handleIncoming(handle func(ctx context.Context, msg interface{}) 
 	// which the handler is supposed to cast to the appropriate type
 	// it is entirely safe not to check the cast in the handler since the handler is
 	// chosen based on the proper type in the first place
-	if err := handle(ctx, val); err != nil {
+	if err := handle(context.Background(), val); err != nil {
 		return errorf(ErrHandler, "(msg code %v): %v", msg.Code, err)
 	}
 	return nil
