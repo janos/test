@@ -18,7 +18,7 @@ package bzzeth
 
 // Handshake is used in between the ethereum node and the Swarm node
 type Handshake struct {
-	ServeHeaders uint64 //indicates if this node is expected to serve requests for headers
+	ServeHeaders bool //indicates if this node is expected to serve requests for headers
 }
 
 // NewBlockHeaders is sent from the Ethereum client to the Swarm node

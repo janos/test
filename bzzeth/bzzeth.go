@@ -86,11 +86,11 @@ func (b *BzzEth) Run(p *p2p.Peer, rw p2p.MsgReadWriter) error {
 	defer b.removePeer(bp)
 	defer close(bp.quit)
 
-	handshake, err := bp.Handshake(context.TODO(), Handshake{ServeHeaders: 1}, nil)
+	handshake, err := bp.Handshake(context.TODO(), Handshake{ServeHeaders: true}, nil)
 	if err != nil {
 		return err
 	}
-	bp.servesHeaders = handshake.(*Handshake).ServeHeaders == 1
+	bp.servesHeaders = handshake.(*Handshake).ServeHeaders
 	if isSwarmNodeFunc(bp) {
 		// swarm node - do nothing
 		<-b.quit
