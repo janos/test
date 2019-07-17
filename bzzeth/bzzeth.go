@@ -32,38 +32,27 @@ import (
 // BzzEth implements node.Service
 var _ node.Service = &BzzEth{}
 
-var Spec = &protocols.Spec{
-	Name:       "bzzeth",
-	Version:    1,
-	MaxMsgSize: 10 * 1024 * 1024,
-	Messages: []interface{}{
-		Handshake{},
-		NewBlockHeaders{},
-		GetBlockHeaders{},
-		BlockHeaders{},
-	},
-}
-
+// BzzEth is a global module handling ethereum state on swarm
 type BzzEth struct {
-	mtx   sync.Mutex
-	peers map[enode.ID]*Peer
-	spec  *protocols.Spec
-
-	netStore *storage.NetStore
-
-	quit chan struct{}
+	mtx      sync.Mutex         // lock for peer pool
+	peers    map[enode.ID]*Peer // peer pool
+	netStore *storage.NetStore  // netstore to retrieve and store
+	quit     chan struct{}      // quit channel to close go routines
 }
 
+// New constructs the BzzEth node service
 func New(ns *storage.NetStore) *BzzEth {
-	bzzeth := &BzzEth{
+	return &BzzEth{
 		peers:    make(map[enode.ID]*Peer),
 		netStore: ns,
 		quit:     make(chan struct{}),
 	}
+}
 
-	bzzeth.spec = Spec
-
-	return bzzeth
+func (b *BzzEth) getPeer(id enode.ID) *Peer {
+	b.mtx.Lock()
+	defer b.mtx.Unlock()
+	return b.peers[id]
 }
 
 func (b *BzzEth) addPeer(p *Peer) {
@@ -78,24 +67,30 @@ func (b *BzzEth) removePeer(p *Peer) {
 	delete(b.peers, p.ID())
 }
 
+// Run is the bzzeth protocol run function.
+// - creates a peer
+// - checks if it is a swarm node, put the protocol in idle mode
+// - performs handshake
+// - adds it the peerpool
+// - starts handler loop
 func (b *BzzEth) Run(p *p2p.Peer, rw p2p.MsgReadWriter) error {
-	peer := protocols.NewPeer(p, rw, b.spec)
+	peer := protocols.NewPeer(p, rw, Spec)
 	bp := NewPeer(peer)
-	b.addPeer(bp)
 
-	defer b.removePeer(bp)
-	defer close(bp.quit)
-
+	// perform handshake and register if peer serves headers
 	handshake, err := bp.Handshake(context.TODO(), Handshake{ServeHeaders: true}, nil)
 	if err != nil {
 		return err
 	}
-	bp.servesHeaders = handshake.(*Handshake).ServeHeaders
+	bp.serveHeaders = handshake.(*Handshake).ServeHeaders
+	log.Warn("handshake", "hs", handshake, "peer", bp)
+	// with another swarm node the protocol goes into idle
 	if isSwarmNodeFunc(bp) {
-		// swarm node - do nothing
 		<-b.quit
 		return nil
 	}
+	b.addPeer(bp)
+	defer b.removePeer(bp)
 
 	return peer.Run(b.HandleMsg(bp))
 }
@@ -128,49 +123,41 @@ func (b *BzzEth) handleBlockHeaders(ctx context.Context, p *Peer, msg *BlockHead
 	log.Debug("bzzeth.handleBlockHeaders")
 }
 
+// Protocols returns the p2p protocol
 func (b *BzzEth) Protocols() []p2p.Protocol {
 	return []p2p.Protocol{
 		{
-			Name:    "bzzeth",
-			Version: 1,
-			Length:  10 * 1024 * 1024,
+			Name:    Spec.Name,
+			Version: Spec.Version,
+			Length:  Spec.Length(),
 			Run:     b.Run,
 		},
 	}
 }
 
+// APIs return APIs defined on the node service
 func (b *BzzEth) APIs() []rpc.API {
-	return []rpc.API{
-		{
-			Namespace: "bzzeth",
-			Version:   "1.0",
-			Service:   NewAPI(b),
-			Public:    false,
-		},
-	}
+	return nil
 }
 
-// Additional public methods accessible through API for pss
-type API struct {
-	*BzzEth
-}
-
-func NewAPI(b *BzzEth) *API {
-	return &API{BzzEth: b}
-}
-
+// Start starts the BzzEth node service
 func (b *BzzEth) Start(server *p2p.Server) error {
-	log.Info("bzz-eth starting...")
+	log.Info("bzzeth starting...")
 	return nil
 }
 
+// Stop stops the BzzEth node service
 func (b *BzzEth) Stop() error {
-	log.Info("bzz-eth shutting down...")
+	log.Info("bzzeth shutting down...")
+	close(b.quit)
 	return nil
 }
 
+// this function is called to check if the remote peer is another swarm node
+// in which case the protocol is idle
+// can be reassigned in test to mock a swarm node
 var isSwarmNodeFunc = isSwarmNode
 
-func isSwarmNode(p *Peer) (yes bool) {
+func isSwarmNode(p *Peer) bool {
 	return p.HasCap("bzz")
 }

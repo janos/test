@@ -32,6 +32,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"reflect"
 	"sync"
 	"time"
@@ -39,6 +40,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/p2p"
+	"github.com/ethereum/go-ethereum/rlp"
 )
 
 // error codes used by this  protocol scheme
@@ -282,14 +284,14 @@ func (p *Peer) Send(ctx context.Context, msg interface{}) error {
 	//Payload: r,
 	//}
 
-	//if the accounting hook is set, call it
-	//if p.spec.Hook != nil {
-	//err := p.spec.Hook.Send(p, wmsg.Size, msg)
-	//if err != nil {
-	//p.Drop()
-	//return err
-	//}
-	//}
+	// if the accounting hook is set, call it
+	// if p.spec.Hook != nil {
+	// 	err := p.spec.Hook.Send(p, msg.Size, msg)
+	// 	if err != nil {
+	// 		p.Drop()
+	// 		return err
+	// 	}
+	// }
 
 	code, found := p.spec.GetCode(msg)
 	if !found {
@@ -349,21 +351,21 @@ func (p *Peer) handleIncoming(handle func(ctx context.Context, msg interface{}) 
 	if !ok {
 		return errorf(ErrInvalidMsgCode, "%v", msg.Code)
 	}
-	//b, err := ioutil.ReadAll(msg.Payload)
-	//if err != nil {
-	//panic(err)
-	//}
-	//if err := rlp.DecodeBytes(b, val); err != nil {
-	//return errorf(ErrDecode, "<= %v: %v", msg, err)
-	//}
+	b, err := ioutil.ReadAll(msg.Payload)
+	if err != nil {
+		panic(err)
+	}
+	if err := rlp.DecodeBytes(b, val); err != nil {
+		return errorf(ErrDecode, "<= %v: %v", msg, err)
+	}
 
-	//if the accounting hook is set, call it
-	//if p.spec.Hook != nil {
-	//err := p.spec.Hook.Receive(p, msg.Size, val)
-	//if err != nil {
-	//return err
-	//}
-	//}
+	// if the accounting hook is set, call it
+	// if p.spec.Hook != nil {
+	// 	err := p.spec.Hook.Receive(p, msg.Size, val)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// }
 
 	// call the registered handler callbacks
 	// a registered callback take the decoded message as argument as an interface

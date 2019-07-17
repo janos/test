@@ -276,9 +276,13 @@ type WrappedMsg struct {
 }
 
 func Wrap(msg interface{}) interface{} {
-	data, _ := rlp.EncodeToBytes(msg)
-	return &WrappedMsg{
-		Size:    uint32(len(data)),
-		Payload: data,
-	}
+	return msg
 }
+
+// func Wrap(msg interface{}) interface{} {
+// 	data, _ := rlp.EncodeToBytes(msg)
+// 	return &WrappedMsg{
+// 		Size:    uint32(len(data)),
+// 		Payload: data,
+// 	}
+// }

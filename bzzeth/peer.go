@@ -17,28 +17,16 @@
 package bzzeth
 
 import (
-	"errors"
-
 	"github.com/ethersphere/swarm/p2p/protocols"
 )
 
-// ErrMaxPeerServers will be returned if peer server limit is reached.
-// It will be sent in the SubscribeErrorMsg.
-var ErrMaxPeerServers = errors.New("max peer servers")
-
-// Peer is the Peer extension for the streaming protocol
+// Peer extends p2p/protocols Peer
 type Peer struct {
 	*protocols.Peer
-
-	servesHeaders bool
-	quit          chan struct{}
+	serveHeaders bool // if the remote serves headers
 }
 
 // NewPeer is the constructor for Peer
 func NewPeer(peer *protocols.Peer) *Peer {
-	p := &Peer{
-		Peer: peer,
-		quit: make(chan struct{}),
-	}
-	return p
+	return &Peer{Peer: peer}
 }

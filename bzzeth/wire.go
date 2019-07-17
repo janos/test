@@ -16,30 +16,48 @@
 
 package bzzeth
 
+import "github.com/ethersphere/swarm/p2p/protocols"
+
+// Spec is the protocol spec for bzzeth
+var Spec = &protocols.Spec{
+	Name:       "bzzeth",
+	Version:    1,
+	MaxMsgSize: 10 * 1024 * 1024,
+	Messages: []interface{}{
+		Handshake{},
+		NewBlockHeaders{},
+		GetBlockHeaders{},
+		BlockHeaders{},
+	},
+}
+
 // Handshake is used in between the ethereum node and the Swarm node
 type Handshake struct {
-	ServeHeaders bool //indicates if this node is expected to serve requests for headers
+	ServeHeaders bool // indicates if this node is expected to serve requests for headers
 }
 
 // NewBlockHeaders is sent from the Ethereum client to the Swarm node
 type NewBlockHeaders struct {
-	Headers []Header
+	Headers []HeaderHash
 }
 
-type Header struct {
-	Hash   []byte //block hash
-	Number []byte //block height
+// HeaderHash encodes an ethereum block hash
+type HeaderHash struct {
+	Hash   []byte // block hash
+	Number []byte // block height
 }
 
-// GetBlockHeader is used between a Swarm node and the Ethereum node in two cases:
-// 1. When an Ethereum node asks the header corresponding to the hashes in the message(eth -> bzz)
+// GetBlockHeaders is used between a Swarm node and the Ethereum node in two cases:
+// 1. When an Ethereum node asks the header corresponding to the hashes in the message (eth -> bzz)
 // 2. When a Swarm node cannot find a particular header in the network, it asks the ethereum node for the header in order to push it to the network (bzz -> eth)
 type GetBlockHeaders struct {
-	Id     uint32
-	Hashes [][]byte
+	ID     uint32   // request id
+	Hashes [][]byte // slice of hashes
 }
 
+// BlockHeaders encapsulates actual header blobs sent as a response to GetBlockHeaders
+// multiple responses to the same request, whatever the node has it sends right away
 type BlockHeaders struct {
-	Id      uint32
-	Headers [][]byte
+	ID      uint32   // request id
+	Headers [][]byte // slice of chunk data (rlp encoded headers)
 }
