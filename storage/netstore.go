@@ -28,7 +28,6 @@ import (
 	"github.com/ethersphere/swarm/log"
 	"github.com/ethersphere/swarm/network/timeouts"
 	"github.com/ethersphere/swarm/spancontext"
-	lru "github.com/hashicorp/golang-lru"
 
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/p2p/enode"
@@ -37,14 +36,11 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-const (
-	// capacity for the fetchers LRU cache
-	fetchersCapacity = 500000
-)
-
 var (
 	ErrNoSuitablePeer = errors.New("no suitable peer")
 )
+
+const fetcherTimeout = 5 * time.Minute
 
 // Fetcher is a struct which maintains state of remote requests.
 // Fetchers are stored in fetchers map and signal to all interested parties if a given chunk is delivered
@@ -85,7 +81,7 @@ type RemoteGetFunc func(ctx context.Context, req *Request, localID enode.ID) (*e
 type NetStore struct {
 	chunk.Store
 	LocalID      enode.ID // our local enode - used when issuing RetrieveRequests
-	fetchers     *lru.Cache
+	fetchers     *fetcherCache
 	putMu        sync.Mutex
 	requestGroup singleflight.Group
 	RemoteGet    RemoteGetFunc
@@ -93,10 +89,8 @@ type NetStore struct {
 
 // NewNetStore creates a new NetStore using the provided chunk.Store and localID of the node.
 func NewNetStore(store chunk.Store, localID enode.ID) *NetStore {
-	fetchers, _ := lru.New(fetchersCapacity)
-
 	return &NetStore{
-		fetchers: fetchers,
+		fetchers: newFetcherCache(fetcherTimeout),
 		Store:    store,
 		LocalID:  localID,
 	}
@@ -117,23 +111,22 @@ func (n *NetStore) Put(ctx context.Context, mode chunk.ModePut, ch Chunk) (bool,
 	}
 
 	// notify RemoteGet (or SwarmSyncerClient) about a chunk delivery and it being stored
-	fi, ok := n.fetchers.Get(ch.Address().String())
-	if ok {
+	fi := n.fetchers.get(ch.Address())
+	if fi != nil {
 		// we need SafeClose, because it is possible for a chunk to both be
 		// delivered through syncing and through a retrieve request
-		fii := fi.(*Fetcher)
-		fii.SafeClose()
+		fi.SafeClose()
 		log.Trace("netstore.put chunk delivered and stored", "base", n.LocalID, "ref", ch.Address().String())
 
-		metrics.GetOrRegisterResettingTimer(fmt.Sprintf("netstore.fetcher.lifetime.%s", fii.CreatedBy), nil).UpdateSince(fii.CreatedAt)
+		metrics.GetOrRegisterResettingTimer(fmt.Sprintf("netstore.fetcher.lifetime.%s", fi.CreatedBy), nil).UpdateSince(fi.CreatedAt)
 
 		// helper snippet to log if a chunk took way to long to be delivered
 		slowChunkDeliveryThreshold := 5 * time.Second
-		if time.Since(fii.CreatedAt) > slowChunkDeliveryThreshold {
+		if time.Since(fi.CreatedAt) > slowChunkDeliveryThreshold {
 			log.Trace("netstore.put slow chunk delivery", "ref", ch.Address().String())
 		}
 
-		n.fetchers.Remove(ch.Address().String())
+		n.fetchers.remove(ch.Address())
 	}
 
 	return exists, nil
@@ -141,12 +134,7 @@ func (n *NetStore) Put(ctx context.Context, mode chunk.ModePut, ch Chunk) (bool,
 
 // Close chunk store
 func (n *NetStore) Close() error {
-	fmt.Println("FETCHERS", n.fetchers.Len(), n.LocalID.String()[:16])
-	fmt.Println(n.fetchers.Keys())
-	if n.fetchers.Len() > 0 {
-		panic(0)
-	}
-
+	n.fetchers.close()
 	return n.Store.Close()
 }
 
@@ -295,14 +283,12 @@ func (n *NetStore) GetOrCreateFetcher(ctx context.Context, ref Address, interest
 		return nil, false, false
 	}
 
-	f = NewFetcher()
-	v, loaded := n.fetchers.Get(ref.String())
-	log.Trace("netstore.has-with-callback.loadorstore", "base", n.LocalID.String()[:16], "ref", ref.String(), "loaded", loaded, "createdBy", interestedParty)
-	if loaded {
-		f = v.(*Fetcher)
-	} else {
+	f = n.fetchers.get(ref)
+	log.Trace("netstore.has-with-callback.loadorstore", "base", n.LocalID.String()[:16], "ref", ref.String(), "loaded", f != nil, "createdBy", interestedParty)
+	if f == nil {
+		f = NewFetcher()
 		f.CreatedBy = interestedParty
-		n.fetchers.Add(ref.String(), f)
+		n.fetchers.add(ref, f)
 	}
 
 	// if fetcher created by request, but we get a call from syncer, make sure we issue a second request
@@ -312,4 +298,89 @@ func (n *NetStore) GetOrCreateFetcher(ctx context.Context, ref Address, interest
 	}
 
 	return f, loaded, true
+}
+
+type fetcherCache struct {
+	c    map[string]*Fetcher
+	mu   sync.RWMutex
+	done chan struct{}
+}
+
+func newFetcherCache(ttl time.Duration) (c *fetcherCache) {
+	c = &fetcherCache{
+		c: make(map[string]*Fetcher),
+	}
+	go c.runCleaner(ttl)
+	return c
+}
+
+func (c *fetcherCache) get(addr chunk.Address) (f *Fetcher) {
+	c.mu.RLock()
+	f = c.c[addr.String()]
+	c.mu.RUnlock()
+	return f
+}
+
+func (c *fetcherCache) add(addr chunk.Address, f *Fetcher) {
+	c.mu.Lock()
+	c.c[addr.String()] = f
+	c.mu.Unlock()
+}
+
+func (c *fetcherCache) remove(addr chunk.Address) {
+	c.mu.Lock()
+	delete(c.c, addr.String())
+	c.mu.Unlock()
+}
+
+func (c *fetcherCache) addrs() (a []chunk.Address) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	a = make([]chunk.Address, 0, len(c.c))
+	for k := range c.c {
+		h, err := hex.DecodeString(k)
+		if err != nil {
+			panic(err)
+		}
+		a = append(a, chunk.Address(h))
+	}
+	return a
+}
+
+func (c *fetcherCache) len() (l int) {
+	c.mu.Lock()
+	l = len(c.c)
+	c.mu.Unlock()
+	return l
+}
+
+func (c *fetcherCache) close() {
+	close(c.done)
+}
+
+func (c *fetcherCache) runCleaner(ttl time.Duration) {
+	if ttl <= 0 {
+		return
+	}
+
+	const interval = time.Minute
+
+	t := time.NewTicker(interval)
+	defer t.Stop()
+
+	for {
+		select {
+		case <-t.C:
+			c.mu.Lock()
+			for k, f := range c.c {
+				if time.Since(f.CreatedAt) > ttl {
+					f.SafeClose()
+					delete(c.c, k)
+				}
+			}
+			c.mu.Unlock()
+		case <-c.done:
+			return
+		}
+	}
 }
